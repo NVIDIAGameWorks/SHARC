@@ -1,16 +1,16 @@
-# SHARC Integration Guide
+# SHaRC Integration Guide
 
-SHARC algorithm integration doesn't require substantial modifications to the existing path tracer code. The core algorithm consists of two passes. The first pass uses sparse tracing to fill the world-space radiance cache using existing path tracer code, second pass samples cached data on ray hit to speed up tracing.
+SHaRC algorithm integration doesn't require substantial modifications to the existing path tracer code. The core algorithm consists of two passes. The first pass uses sparse tracing to fill the world-space radiance cache using existing path tracer code, second pass samples cached data on ray hit to speed up tracing.
 
 <p style="text-align: center">
 <img src="images/sample_normal.jpg" width=49%></img>
 <img src="images/sample_sharc.jpg" width=49%></img>
-<em>Image 1. Path traced output at 1 path per pixel left and with SHARC cache usage right</em>
+<em>Image 1. Path traced output at 1 path per pixel left and with SHaRC cache usage right</em>
 </p>
 
 ## Integration Steps
 
-An implementation of SHARC using the RTXGI SDK needs to perform the following steps:
+An implementation of SHaRC using the RTXGI SDK needs to perform the following steps:
 
 At Load-Time
 
@@ -43,7 +43,7 @@ float3 color = HashGridDebugColoredHash(positionWorld, gridParameters);
 <p style="text-align: center">
 <img src="images/render_normal.jpg" width=49%></img>
 <img src="images/render_debug.jpg" width=49%></img>
-<em>Image 2. SHARC hash grid vizualization</em>
+<em>Image 2. SHaRC hash grid vizualization</em>
 </p>
 
 Logarithm base controls levels of detail distribution and voxel size ratio change between neighboring levels, it doesn’t make voxel sizes bigger or smaller on average. To control voxel size use ```sceneScale``` parameter instead.
@@ -52,12 +52,12 @@ Logarithm base controls levels of detail distribution and voxel size ratio chang
 
 ### Render Loop Change
 
-Instead of the original trace call, we should have the following four passes with SHARC:
+Instead of the original trace call, we should have the following four passes with SHaRC:
 
-* SHARC update - updates the cache with the new data on each frame. Requires `SHARC_UPDATE 1` shader define
-* SHARC resolve - combines new cache data with data obtained on the previous frame
-* SHARC hash copy - the second step of the resolve pass required for data compaction
-* SHARC render/query - trace scene paths with early termination using cached data. Requires `SHARC_QUERY 1` shader define
+* SHaRC update - updates the cache with the new data on each frame. Requires `SHaRC_UPDATE 1` shader define
+* SHaRC resolve - combines new cache data with data obtained on the previous frame
+* SHaRC hash copy - the second step of the resolve pass required for data compaction
+* SHaRC render/query - trace scene paths with early termination using cached data. Requires `SHARC_QUERY 1` shader define
 
 ### Resource Binding
 
@@ -71,7 +71,7 @@ The SDK provides shader-side headers and code snippets that implement most of th
 
 Each pass requires appropriate transition/UAV barries to wait for the previous stage completion.
 
-### SHARC Update
+### SHaRC Update
 
 Pass requires `SHARC_UPDATE 1` shader define.
 
@@ -79,14 +79,14 @@ This pass runs a full path tracer loop for a subset of screen pixels with some m
 
 <p style="text-align: center">
 <img src="images/sharc_update.svg" width=35%>
-<em>Figure 1. Path tracer loop during SHARC update</em>
+<em>Figure 1. Path tracer loop during SHaRC update</em>
 </p>
 
-### SHARC Render
+### SHaRC Render
 
 Pass requires `SHARC_QUERY 1` shader define.
 
-During rendering with SHARC cache usage we should try obtaining cached data using `SharcGetCachedRadiance()` on each hit except the primary hit if any. Upon success, the path tracing loop should be immediately terminated.
+During rendering with SHaRC cache usage we should try obtaining cached data using `SharcGetCachedRadiance()` on each hit except the primary hit if any. Upon success, the path tracing loop should be immediately terminated.
 
 <p style="text-align: center">
 <img src="images/sharc_render.svg" width=35%>
