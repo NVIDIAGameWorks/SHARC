@@ -54,7 +54,7 @@ Logarithm base controls levels of detail distribution and voxel size ratio chang
 
 Instead of the original trace call, we should have the following four passes with SHaRC:
 
-* SHaRC update - updates the cache with the new data on each frame. Requires `SHaRC_UPDATE 1` shader define
+* SHaRC update - updates the cache with the new data on each frame. Requires `SHARC_UPDATE 1` shader define
 * SHaRC resolve - combines new cache data with data obtained on the previous frame
 * SHaRC hash copy - the second step of the resolve pass required for data compaction
 * SHaRC render/query - trace scene paths with early termination using cached data. Requires `SHARC_QUERY 1` shader define
