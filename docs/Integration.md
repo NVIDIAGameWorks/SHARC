@@ -15,11 +15,13 @@ An implementation of SHaRC using the RTXGI SDK needs to perform the following st
 At Load-Time
 
 Create main resources:
-* `Hash entries` buffer - structured buffer with 64-bits entries
-* `Voxel data` buffer - stores accumulated radiance and sample count, use 128-bits per entry, RAW buffer. Two instances are used to store current and previous frame data
+* `Hash entries` buffer - structured buffer with 64-bits entries to store the hashes
+* `Voxel data` buffer - structured buffer with 128-bit entries which stores accumulated radiance and sample count. Two instances are used to store current and previous frame data
 * `Copy offset` buffer - structured buffer with 32-bits per entry used for data compaction
 
 The number of entries in each buffer should be the same, it represents the number of scene voxels used for radiance caching. A solid baseline for most scenes can be the usage of $2^{22}$ elements.
+
+All buffers should be cleared with '0' before usage
 
 At Render-Time
 
@@ -79,7 +81,7 @@ This pass runs a full path tracer loop for a subset of screen pixels with some m
 
 <p style="text-align: center">
 <img src="images/sharc_update.svg" width=35%>
-<em>Figure 1. Path tracer loop during SHaRC update</em>
+<em>Figure 1. Path tracer loop during SHARC update</em>
 </p>
 
 ### SHaRC Render
