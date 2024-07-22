@@ -17,11 +17,11 @@
 #define HASH_GRID_HASH_MAP_BUCKET_SIZE      32
 #define HASH_GRID_INVALID_HASH_KEY          0
 #define HASH_GRID_INVALID_CACHE_ENTRY       0xFFFFFFFF
-#define HASH_GRID_USE_NORMALS               1
+#define HASH_GRID_USE_NORMALS               1       // account for normal data in the hash key
 #define HASH_GRID_ALLOW_COMPACTION          (HASH_GRID_HASH_MAP_BUCKET_SIZE == 32)
-#define HASH_GRID_LEVEL_BIAS                2 // positive bias adds extra levels with content magnification
+#define HASH_GRID_LEVEL_BIAS                2       // positive bias adds extra levels with content magnification (can be negative as well)
 #define HASH_GRID_POSITION_OFFSET           float3(0.0f, 0.0f, 0.0f)
-#define HASH_GRID_POSITION_BIAS             float3(1e-6f, 1e-6f, 1e-6f) // may require adjustment for extreme scene scales
+#define HASH_GRID_POSITION_BIAS             1e-4f   // may require adjustment for extreme scene scales
 #define HASH_GRID_NORMAL_BIAS               1e-3f
 
 #define CacheEntry uint
@@ -69,9 +69,9 @@ uint Hash32(HashKey hashKey)
 
 uint GetGridLevel(float3 samplePosition, GridParameters gridParameters)
 {
-    const float distance = length(gridParameters.cameraPosition - samplePosition);
+    const float distance2 = dot(gridParameters.cameraPosition - samplePosition, gridParameters.cameraPosition - samplePosition);
 
-    return clamp(int(floor(LogBase(distance, gridParameters.logarithmBase) + HASH_GRID_LEVEL_BIAS)), 1, HASH_GRID_LEVEL_BIT_MASK);
+    return uint(clamp(0.5f * LogBase(distance2, gridParameters.logarithmBase) + HASH_GRID_LEVEL_BIAS, 1.0f, float(HASH_GRID_LEVEL_BIT_MASK)));
 }
 
 float GetVoxelSize(uint gridLevel, GridParameters gridParameters)
@@ -82,7 +82,7 @@ float GetVoxelSize(uint gridLevel, GridParameters gridParameters)
 // Based on logarithmic caching by Johannes Jendersie
 int4 CalculateGridPositionLog(float3 samplePosition, GridParameters gridParameters)
 {
-    samplePosition += HASH_GRID_POSITION_BIAS;
+    samplePosition += float3(HASH_GRID_POSITION_BIAS, HASH_GRID_POSITION_BIAS, HASH_GRID_POSITION_BIAS);
 
     uint  gridLevel    = GetGridLevel(samplePosition, gridParameters);
     float voxelSize    = GetVoxelSize(gridLevel, gridParameters);
@@ -93,8 +93,6 @@ int4 CalculateGridPositionLog(float3 samplePosition, GridParameters gridParamete
 
 HashKey ComputeSpatialHash(float3 samplePosition, float3 sampleNormal, GridParameters gridParameters)
 {
-    const float distance = length(gridParameters.cameraPosition - samplePosition);
-
     uint4 gridPosition = uint4(CalculateGridPositionLog(samplePosition, gridParameters));
 
     HashKey hashKey = ((uint64_t(gridPosition.x) & HASH_GRID_POSITION_BIT_MASK) << (HASH_GRID_POSITION_BIT_NUM * 0))
@@ -120,9 +118,9 @@ float3 GetPositionFromHashKey(const HashKey hashKey, GridParameters gridParamete
     const int signMask     = ~((1 << HASH_GRID_POSITION_BIT_NUM) - 1);
 
     int3 gridPosition;
-    gridPosition.x = int((hashKey >> HASH_GRID_POSITION_BIT_NUM * 0) & HASH_GRID_POSITION_BIT_MASK);
-    gridPosition.y = int((hashKey >> HASH_GRID_POSITION_BIT_NUM * 1) & HASH_GRID_POSITION_BIT_MASK);
-    gridPosition.z = int((hashKey >> HASH_GRID_POSITION_BIT_NUM * 2) & HASH_GRID_POSITION_BIT_MASK);
+    gridPosition.x = int((hashKey >> (HASH_GRID_POSITION_BIT_NUM * 0)) & HASH_GRID_POSITION_BIT_MASK);
+    gridPosition.y = int((hashKey >> (HASH_GRID_POSITION_BIT_NUM * 1)) & HASH_GRID_POSITION_BIT_MASK);
+    gridPosition.z = int((hashKey >> (HASH_GRID_POSITION_BIT_NUM * 2)) & HASH_GRID_POSITION_BIT_MASK);
 
     // Fix negative coordinates
     gridPosition.x = (gridPosition.x & signBit) != 0 ? gridPosition.x | signMask : gridPosition.x;
@@ -156,7 +154,7 @@ void HashMapAtomicCompareExchange(in HashMapData hashMapData, in uint dstOffset,
     InterlockedCompareExchange(BUFFER_AT_OFFSET(hashMapData.hashEntriesBuffer, dstOffset), compareValue, value, originalValue);
 #endif // !SHARC_ENABLE_GLSL
 #else // !HASH_GRID_ENABLE_64_BIT_ATOMICS
-    // ANY rearangments to the code below lead to device hang if fuze is unlimited
+    // ANY rearangments to the code below lead to device hang if fuse is unlimited
     const uint cLock = 0xAAAAAAAA;
     uint fuse = 0;
     const uint fuseLength = 8;
@@ -169,7 +167,7 @@ void HashMapAtomicCompareExchange(in HashMapData hashMapData, in uint dstOffset,
 
         if (state != cLock)
         {
-            originalValue = BUFFER_AT_OFFSET(hashMapData.hashEntriesBuffer, d34stOffset);
+            originalValue = BUFFER_AT_OFFSET(hashMapData.hashEntriesBuffer, dstOffset);
             if (originalValue == compareValue)
                 BUFFER_AT_OFFSET(hashMapData.hashEntriesBuffer, dstOffset) = value;
             InterlockedExchange(hashMapData.lockBuffer[dstOffset], state, fuse);
@@ -263,5 +261,30 @@ float3 HashGridDebugColoredHash(float3 samplePosition, GridParameters gridParame
 {
     HashKey hashKey = ComputeSpatialHash(samplePosition, float3(0, 0, 0), gridParameters);
 
-    return GetColorFromHash32(Hash32(hashKey));
+    uint gridLevel = GetGridLevel(samplePosition, gridParameters);
+    float3 color = GetColorFromHash32(Hash32(hashKey)) * GetColorFromHash32(HashJenkins32(gridLevel)).xyz;
+
+    return color;
+}
+
+float3 HashGridDebugOccupancy(uint2 pixelPosition, uint2 screenSize, HashMapData hashMapData)
+{
+    const uint elementSize = 7;
+    const uint borderSize = 1;
+    const uint blockSize = elementSize + borderSize;
+
+    uint rowNum = screenSize.y / blockSize;
+    uint rowIndex = pixelPosition.y / blockSize;
+    uint columnIndex = pixelPosition.x / blockSize;
+    uint elementIndex = (columnIndex / HASH_GRID_HASH_MAP_BUCKET_SIZE) * (rowNum * HASH_GRID_HASH_MAP_BUCKET_SIZE) + rowIndex * HASH_GRID_HASH_MAP_BUCKET_SIZE + (columnIndex % HASH_GRID_HASH_MAP_BUCKET_SIZE);
+
+    if (elementIndex < hashMapData.capacity && ((pixelPosition.x % blockSize) < elementSize && (pixelPosition.y % blockSize) < elementSize))
+    {
+        HashKey storedHashKey = BUFFER_AT_OFFSET(hashMapData.hashEntriesBuffer, elementIndex);
+
+        if (storedHashKey != HASH_GRID_INVALID_HASH_KEY)
+            return float3(0.0f, 1.0f, 0.0f);
+    }
+
+    return float3(0.0f, 0.0f, 0.0f);
 }
