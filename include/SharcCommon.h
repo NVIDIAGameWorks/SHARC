@@ -13,22 +13,11 @@
 #define SHARC_VERSION_BUILD                 1
 #define SHARC_VERSION_REVISION              0
 
-#if (SHARC_UPDATE || SHARC_QUERY)
-#if SHARC_UPDATE
-#define SHARC_QUERY 0
-#else // !SHARC_UPDATE
-#define SHARC_UPDATE 0
-#endif // !SHARC_UPDATE
-#else // !(SHARC_UPDATE || SHARC_QUERY)
-#define SHARC_QUERY 0
-#define SHARC_UPDATE 0
-#endif // !(SHARC_UPDATE || SHARC_QUERY)
-
 #define SHARC_SAMPLE_NUM_MULTIPLIER             16      // increase sample count internally to make resolve step with low sample count more robust, power of 2 usage may help compiler with optimizations
 #define SHARC_SAMPLE_NUM_THRESHOLD              0       // elements with sample count above this threshold will be used for early-out/resampling
 #define SHARC_SEPARATE_EMISSIVE                 0       // if set, emissive values should be passed separately on updates and added to the cache query
 #define SHARC_PROPOGATION_DEPTH                 4       // controls the amount of vertices stored in memory for signal backpropagation
-#define SHARC_ENABLE_CACHE_RESAMPLING           (SHARC_UPDATE && (SHARC_PROPOGATION_DEPTH > 1)) // resamples the cache during update step
+#define SHARC_ENABLE_CACHE_RESAMPLING           (SHARC_PROPOGATION_DEPTH > 1) // resamples the cache during update step
 #define SHARC_RESAMPLING_DEPTH_MIN              1       // controls minimum path depth which can be used with cache resampling
 #define SHARC_RADIANCE_SCALE                    1e3f    // scale used for radiance values accumulation. Each component uses 32-bit integer for data storage
 #define SHARC_ACCUMULATED_FRAME_NUM_MIN         1       // minimum number of frames to use for data accumulation
@@ -205,16 +194,17 @@ void SharcAddVoxelData(RW_STRUCTURED_BUFFER(voxelDataBuffer, uint4), CacheEntry 
     if (sampleData != 0) InterlockedAdd(BUFFER_AT_OFFSET(voxelDataBuffer, cacheEntry).w, sampleData);
 }
 
+struct SharcPathPayload
+{
+    CacheEntry cacheEntry[SHARC_PROPOGATION_DEPTH];
+    float3 sampleWeight[SHARC_PROPOGATION_DEPTH];
+    uint pathLength;
+};
+
 struct SharcState
 {
     GridParameters gridParameters;
     HashMapData hashMapData;
-
-#if SHARC_UPDATE
-    CacheEntry cacheEntry[SHARC_PROPOGATION_DEPTH];
-    float3 sampleWeight[SHARC_PROPOGATION_DEPTH];
-    uint pathLength;
-#endif // SHARC_UPDATE
 
     RW_STRUCTURED_BUFFER(voxelDataBuffer, uint4);
 
@@ -232,35 +222,36 @@ struct SharcHitData
 #endif // SHARC_SEPARATE_EMISSIVE
 };
 
-void SharcInit(inout SharcState sharcState)
+void SharcPayloadInit(inout SharcPathPayload sharcPayload)
 {
-#if SHARC_UPDATE
-    sharcState.pathLength = 0;
-#endif // SHARC_UPDATE
+    sharcPayload.pathLength = 0;
 }
 
-void SharcUpdateMiss(inout SharcState sharcState, float3 radiance)
+void SharcPayloadSetThroughput(inout SharcPathPayload sharcPayload, float3 throughput)
 {
-#if SHARC_UPDATE
-    for (int i = 0; i < sharcState.pathLength; ++i)
+    sharcPayload.sampleWeight[0] = throughput;
+}
+
+void SharcUpdateMiss(inout SharcPathPayload sharcPayload, SharcState sharcState, float3 radiance)
+{
+    for (int i = 0; i < sharcPayload.pathLength; ++i)
     {
-        radiance *= sharcState.sampleWeight[i];
-        SharcAddVoxelData(sharcState.voxelDataBuffer, sharcState.cacheEntry[i], radiance, 0);
+        radiance *= sharcPayload.sampleWeight[i];
+        SharcAddVoxelData(sharcState.voxelDataBuffer, sharcPayload.cacheEntry[i], radiance, 0);
     }
-#endif // SHARC_UPDATE
 }
 
-bool SharcUpdateHit(inout SharcState sharcState, SharcHitData sharcHitData, float3 lighting, float random)
+bool SharcUpdateHit(inout SharcPathPayload sharcPayload, SharcState sharcState, SharcHitData sharcHitData, float3 lighting, float random)
 {
     bool continueTracing = true;
-#if SHARC_UPDATE
+
     CacheEntry cacheEntry = HashMapInsertEntry(sharcState.hashMapData, sharcHitData.positionWorld, sharcHitData.normalWorld, sharcState.gridParameters);
 
     float3 sharcRadiance = lighting;
 
 #if SHARC_ENABLE_CACHE_RESAMPLING
     uint resamplingDepth = uint(round(lerp(SHARC_RESAMPLING_DEPTH_MIN, SHARC_PROPOGATION_DEPTH - 1, random)));
-    if (resamplingDepth <= sharcState.pathLength)
+    if (resamplingDepth <= sharcPayload.pathLength)
     {
         SharcVoxelData voxelData = SharcGetVoxelData(sharcState.voxelDataBufferPrev, cacheEntry);
         if (voxelData.accumulatedSampleNum > SHARC_SAMPLE_NUM_THRESHOLD)
@@ -279,29 +270,22 @@ bool SharcUpdateHit(inout SharcState sharcState, SharcHitData sharcHitData, floa
 #endif // SHARC_SEPARATE_EMISSIVE
 
     uint i;
-    for (i = 0; i < sharcState.pathLength; ++i)
+    for (i = 0; i < sharcPayload.pathLength; ++i)
     {
-        sharcRadiance *= sharcState.sampleWeight[i];
-        SharcAddVoxelData(sharcState.voxelDataBuffer, sharcState.cacheEntry[i], sharcRadiance, 0);
+        sharcRadiance *= sharcPayload.sampleWeight[i];
+        SharcAddVoxelData(sharcState.voxelDataBuffer, sharcPayload.cacheEntry[i], sharcRadiance, 0);
     }
 
-    for (i = sharcState.pathLength; i > 0; --i)
+    for (i = sharcPayload.pathLength; i > 0; --i)
     {
-        sharcState.cacheEntry[i] = sharcState.cacheEntry[i - 1];
-        sharcState.sampleWeight[i] = sharcState.sampleWeight[i - 1];
+        sharcPayload.cacheEntry[i] = sharcPayload.cacheEntry[i - 1];
+        sharcPayload.sampleWeight[i] = sharcPayload.sampleWeight[i - 1];
     }
 
-    sharcState.cacheEntry[0] = cacheEntry;
-    sharcState.pathLength = min(++sharcState.pathLength, SHARC_PROPOGATION_DEPTH - 1);
-#endif // SHARC_UPDATE
+    sharcPayload.cacheEntry[0] = cacheEntry;
+    sharcPayload.pathLength = min(++sharcPayload.pathLength, SHARC_PROPOGATION_DEPTH - 1);
+
     return continueTracing;
-}
-
-void SharcSetThroughput(inout SharcState sharcState, float3 throughput)
-{
-#if SHARC_UPDATE
-    sharcState.sampleWeight[0] = throughput;
-#endif // SHARC_UPDATE
 }
 
 bool SharcGetCachedRadiance(in SharcState sharcState, in SharcHitData sharcHitData, out float3 radiance, bool debug)
